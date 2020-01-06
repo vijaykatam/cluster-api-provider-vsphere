@@ -74,6 +74,10 @@ type VSphereMachineSpec struct {
 	// machine is cloned.
 	// +optional
 	DiskGiB int32 `json:"diskGiB,omitempty"`
+	// LinkedClone specifies if the cloned VM is a linked clone of template.
+	// Defaults to false.
+	// +optional
+	LinkedClone bool `json:"linkedClone,omitempty"`
 
 	// TrustedCerts is a list of trusted certificates to add to the machine's VM.
 	// +optional

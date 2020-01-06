@@ -19,6 +19,7 @@ package vcenter
 import (
 	"github.com/pkg/errors"
 	"github.com/vmware/govmomi/object"
+	"github.com/vmware/govmomi/vim25/mo"
 	"github.com/vmware/govmomi/vim25/types"
 
 	"sigs.k8s.io/cluster-api-provider-vsphere/pkg/cloud/vsphere/context"
@@ -27,7 +28,9 @@ import (
 )
 
 const (
-	diskMoveType = string(types.VirtualMachineRelocateDiskMoveOptionsMoveAllDiskBackingsAndConsolidate)
+	diskMoveType        = string(types.VirtualMachineRelocateDiskMoveOptionsMoveAllDiskBackingsAndConsolidate)
+	snapShotName        = "CAPVSnapshot"
+	snapShotDescription = "Pre clone snapshot created by cluster-api-provider-vsphere"
 )
 
 // Clone kicks off a clone operation on vCenter to create a new virtual machine.
@@ -89,7 +92,6 @@ func Clone(ctx *context.MachineContext, bootstrapData []byte) error {
 	if memMiB == 0 {
 		memMiB = 2048
 	}
-
 	spec := types.VirtualMachineCloneSpec{
 		Config: &types.VirtualMachineConfigSpec{
 			Annotation: ctx.String(),
@@ -115,6 +117,15 @@ func Clone(ctx *context.MachineContext, bootstrapData []byte) error {
 		// address(es) used to build and inject the VM with cloud-init metadata
 		// are generated.
 		PowerOn: false,
+	}
+	// https://pubs.vmware.com/vsphere-50/index.jsp?topic=%2Fcom.vmware.wssdk.pg.doc_50%2FPG_Ch11_VM_Manage.13.4.html
+	if ctx.VSphereMachine.Spec.LinkedClone {
+		snapshot, err := ensureSnapshot(ctx, tpl, *pool)
+		if err != nil {
+			return errors.Wrapf(err, "error ensuring snapshot for machine %q", ctx)
+		}
+		spec.Snapshot = snapshot
+		spec.Location.DiskMoveType = string(types.VirtualMachineRelocateDiskMoveOptionsCreateNewChildDiskBacking)
 	}
 
 	ctx.Logger.V(6).Info("cloning machine", "clone-spec", spec)
@@ -212,4 +223,42 @@ func getNetworkSpecs(
 	}
 
 	return deviceSpecs, nil
+}
+
+func ensureSnapshot(ctx *context.MachineContext, tpl *object.VirtualMachine, pool object.ResourcePool) (*types.ManagedObjectReference, error) {
+	var ref mo.VirtualMachine
+
+	if err := tpl.Properties(ctx, tpl.Reference(), []string{"snapshot", "summary.config.template"}, &ref); err != nil {
+		return nil, errors.Wrapf(err, "unable to retrieve snapshot info for template %q on %q", tpl, ctx)
+	}
+
+	// do nothing if a snapshot exists
+	if ref.Snapshot != nil {
+		return ref.Snapshot.CurrentSnapshot, nil
+	}
+	// check if this is a template
+	if ref.Summary.Config.Template {
+		if err := tpl.MarkAsVirtualMachine(ctx, pool, nil); err != nil {
+			return nil, errors.Wrapf(err, "unable to mark template as virtual machine for template %q on %q", tpl, ctx)
+		}
+	}
+	ctx.Logger.V(6).Info("creating snapshot", "snapShotName", snapShotName)
+	task, err := tpl.CreateSnapshot(ctx, snapShotName, snapShotDescription, false, false)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to create snapshot for template %q on %q", tpl, ctx)
+	}
+	taskInfo, err := task.WaitForResult(ctx, nil)
+	if err != nil {
+		return nil, errors.Wrapf(err, "unable to create snapshot for template %q on %q", tpl, ctx)
+	}
+
+	// convert back to template if original ref was a template
+	if ref.Summary.Config.Template {
+		if err := tpl.MarkAsTemplate(ctx); err != nil {
+			return nil, errors.Wrapf(err, "unable to mark as template %q on %q", tpl, ctx)
+		}
+	}
+	result := taskInfo.Result.(types.ManagedObjectReference)
+	return &result, nil
+
 }

@@ -44,6 +44,10 @@ spec:
                 this machine is cloned.
               format: int32
               type: integer
+            linkedClone:
+              description: LinkedClone specifies if the cloned VM is a linked clone
+                of template. Defaults to false.
+              type: boolean
             machineRef:
               description: This value is set automatically at runtime and should not
                 be set or modified by users. MachineRef is used to lookup the VM.
